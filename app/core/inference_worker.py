@@ -4,21 +4,20 @@ from typing import Optional, List, Dict, Any
 from .queue_manager import celery_app
 from .processing import run_inference
 from .model_loader import load_model_and_processor # Ensure model is loaded in worker process
-from app.utils.helpers import cleanup_file # Import cleanup helper
+from app.utils.helpers import cleanup_file # Import cleanup helper for input files
 
 logger = logging.getLogger(__name__)
 
 # Ensure the model is loaded when the worker starts
-# This might consume significant memory per worker process.
-# Consider alternative strategies if memory is a constraint (e.g., shared model server).
+# This consumes memory per worker process. Consider alternatives for large scale.
 try:
     logger.info("Worker process started. Loading model and processor...")
+    # Pass trust_remote_code=True if needed by the specific model version
     load_model_and_processor()
     logger.info("Model and processor loaded successfully in worker.")
 except Exception as e:
     logger.exception(f"Failed to load model in worker process: {e}")
-    # Depending on requirements, you might want the worker to exit or retry.
-    # For now, it will log the error and might fail tasks.
+    # Worker might fail tasks if model loading fails.
 
 
 @celery_app.task(bind=True, name="app.core.inference_worker.inference_task")
@@ -29,6 +28,11 @@ def inference_task(
     image_paths: Optional[List[str]] = None,
     audio_paths: Optional[List[str]] = None,
     video_paths: Optional[List[str]] = None,
+    # New parameters passed from the API endpoint
+    return_audio: bool = False,
+    use_audio_in_video: bool = True,
+    speaker: Optional[str] = None,
+    max_new_tokens: Optional[int] = 512,
 ) -> Dict[str, Any]:
     """
     Celery task to perform multimodal inference in the background.
@@ -39,53 +43,71 @@ def inference_task(
         image_paths: List of paths to temporary image files.
         audio_paths: List of paths to temporary audio files.
         video_paths: List of paths to temporary video files.
+        return_audio: Whether to generate audio output.
+        use_audio_in_video: Whether to process audio within video inputs.
+        speaker: The desired speaker voice for audio output.
+        max_new_tokens: Maximum number of new tokens for text generation.
 
     Returns:
-        A dictionary containing the generated text or error information.
+        A dictionary containing the generated text, optional audio path, or error info.
+        Matches the structure expected by InferenceResponse schema.
     """
     task_id = self.request.id
     logger.info(f"Task {task_id}: Received inference request.")
-    all_temp_files = (image_paths or []) + (audio_paths or []) + (video_paths or [])
+    # Input files are handled by run_inference's finally block now
 
     try:
-        # Update task state to STARTED (optional, requires task_track_started=True)
+        # Update task state to STARTED
         self.update_state(state='STARTED', meta={'status': 'Processing...'})
 
         logger.info(f"Task {task_id}: Running inference for prompt: '{prompt[:50]}...'")
-        generated_text = run_inference(
+        # Call run_inference with all parameters
+        result_dict = run_inference(
             prompt=prompt,
             system_prompt=system_prompt,
             image_paths=image_paths,
             audio_paths=audio_paths,
             video_paths=video_paths,
-            # Note: run_inference now handles its own file cleanup
+            return_audio=return_audio,
+            use_audio_in_video=use_audio_in_video,
+            speaker=speaker,
+            max_new_tokens=max_new_tokens,
         )
         logger.info(f"Task {task_id}: Inference completed.")
 
-        # Return result in a structured format matching InferenceResponse schema
-        result = {"generated_text": generated_text}
-        # Optionally update state to SUCCESS before returning
-        # self.update_state(state='SUCCESS', meta=result)
-        return result
+        # Check if inference itself reported an error
+        if result_dict.get("error"):
+             logger.error(f"Task {task_id}: Inference function reported an error: {result_dict['error']}")
+             # Update state to FAILURE with the error from inference
+             self.update_state(
+                 state='FAILURE',
+                 meta={
+                     'exc_type': 'InferenceError',
+                     'exc_message': result_dict['error'],
+                     'status': 'Task failed during inference'
+                 }
+             )
+             # Return the error dict so the status endpoint can report it
+             return {"error": result_dict['error']}
+
+
+        # Return the successful result dictionary directly
+        # Celery will mark the task as SUCCESS automatically
+        return result_dict
 
     except Exception as e:
-        logger.exception(f"Task {task_id}: Error during inference task execution: {e}")
-        # Update state to FAILURE
-        # Celery automatically sets state to FAILURE on unhandled exceptions,
-        # but you can customize the metadata.
+        logger.exception(f"Task {task_id}: Unhandled error during inference task execution: {e}")
+        # Update state to FAILURE for unhandled exceptions
         self.update_state(
             state='FAILURE',
             meta={
                 'exc_type': type(e).__name__,
                 'exc_message': str(e),
-                'status': 'Task failed'
+                'status': 'Task failed unexpectedly'
             }
         )
-        # Ensure cleanup happens even if run_inference failed before its finally block
-        for file_path in all_temp_files:
-            cleanup_file(file_path)
-        # Reraise the exception so Celery marks the task as failed
+        # Reraise the exception so Celery marks the task as failed correctly
         raise
 
-    # Note: The 'finally' block in run_inference should handle cleanup
-    # in most cases, but the extra cleanup in the except block here is a safeguard.
+    # Note: Input file cleanup is handled within run_inference's finally block.
+    # Output audio file cleanup needs a separate strategy (e.g., TTL, manual cleanup endpoint).

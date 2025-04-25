@@ -70,5 +70,5 @@ if __name__ == "__main__":
     import uvicorn
     logger.info("Starting Uvicorn server directly...")
     # Note: Reloading might not work well with model loading in this direct run mode.
-    # Default port changed to 8872 as requested.
-    uvicorn.run(app, host="0.0.0.0", port=8872)
+    # Port is now read from settings
+    uvicorn.run(app, host="0.0.0.0", port=settings.SERVER_PORT)

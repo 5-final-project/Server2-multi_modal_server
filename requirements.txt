@@ -1,16 +1,16 @@
 fastapi
 uvicorn[standard]
 torch
-transformers
-gptqmodel
+transformers>=4.40 # Ensure a recent version for Qwen Omni support
 pillow
 numpy
 python-multipart
 aiofiles
 celery[redis]
 redis
-datasets
+datasets # Might still be needed by transformers internals or for data handling
 accelerate
-einops
-flash-attn
-# Add specific versions if needed, e.g., transformers==4.38.0
+einops # Often a dependency for transformers models
+flash-attn>=2.0 # Required for flash_attention_2
+soundfile # For saving audio output
+pydantic-settings # For config loading
