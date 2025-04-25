@@ -1,0 +1,16 @@
+fastapi
+uvicorn[standard]
+torch
+transformers
+gptqmodel
+pillow
+numpy
+python-multipart
+aiofiles
+celery[redis]
+redis
+datasets
+accelerate
+einops
+flash-attn
+# Add specific versions if needed, e.g., transformers==4.38.0
