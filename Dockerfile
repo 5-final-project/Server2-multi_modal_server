@@ -8,6 +8,8 @@ FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 ENV PYTHONDONTWRITEBYTECODE=1
 # Ensures Python output is sent straight to terminal without being buffered
 ENV PYTHONUNBUFFERED=1
+# Set timezone to prevent interactive prompts during apt installs
+ENV TZ=Etc/UTC
 
 # Set the working directory in the container
 WORKDIR /app
@@ -15,17 +17,15 @@ WORKDIR /app
 # Install Python 3.10 and pip, plus essential build tools
 # Using deadsnakes PPA for modern Python versions on Ubuntu
 # Clean apt cache first, then update and install
+# Use DEBIAN_FRONTEND=noninteractive to prevent tzdata prompts
 RUN rm -rf /var/lib/apt/lists/* && \
     apt-get update && \
-    apt-get install -y --no-install-recommends \
-    software-properties-common \
-    build-essential \
-    tzdata \
-    && \
-    # Add tzdata to prevent potential interactive prompts during installation
+    apt-get install -y --no-install-recommends software-properties-common && \
     add-apt-repository ppa:deadsnakes/ppa && \
     apt-get update && \
-    apt-get install -y --no-install-recommends \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    build-essential \
+    tzdata \
     python3.10 \
     python3.10-distutils \
     python3-pip \
@@ -37,12 +37,8 @@ RUN rm -rf /var/lib/apt/lists/* && \
     # Ensure pip is up to date for python3
     python3 -m pip install --upgrade pip && \
     # Clean up apt lists to reduce image size
+    apt-get clean && \
     rm -rf /var/lib/apt/lists/*
-
-# Install system dependencies that might be needed by torch or other libraries
-# Add any specific system dependencies required by your model or libraries here if necessary.
-# Example: RUN apt-get update && apt-get install -y --no-install-recommends some-package && rm -rf /var/lib/apt/lists/*
-
 
 # Copy the requirements file into the container at /app
 COPY requirements.txt .
