@@ -11,6 +11,7 @@ redis
 datasets # Might still be needed by transformers internals or for data handling
 accelerate
 einops # Often a dependency for transformers models
+packaging # Add packaging dependency for flash-attn setup
 flash-attn>=2.0 # Required for flash_attention_2
 soundfile # For saving audio output
 pydantic-settings # For config loading
