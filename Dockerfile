@@ -5,20 +5,24 @@ FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
 # Set environment variables
 # Prevents Python from writing pyc files to disc (equivalent to python -B)
-ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONDONTWRITEBYTECODE=1
 # Ensures Python output is sent straight to terminal without being buffered
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONUNBUFFERED=1
 
 # Set the working directory in the container
 WORKDIR /app
 
 # Install Python 3.10 and pip, plus essential build tools
 # Using deadsnakes PPA for modern Python versions on Ubuntu
-RUN apt-get update && \
+# Clean apt cache first, then update and install
+RUN rm -rf /var/lib/apt/lists/* && \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
     software-properties-common \
     build-essential \
+    tzdata \
     && \
+    # Add tzdata to prevent potential interactive prompts during installation
     add-apt-repository ppa:deadsnakes/ppa && \
     apt-get update && \
     apt-get install -y --no-install-recommends \
