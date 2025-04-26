@@ -15,6 +15,7 @@ class LlamaModelProcessor:
         self.model_id = model_id
         self.processor = None
         self.model = None
+        self.token = None
         self._load_model()
 
     def _load_model(self):
@@ -31,10 +32,11 @@ class LlamaModelProcessor:
                 torch_dtype = torch.float32 # Use float32 for CPU
                 logger.info("CUDA not available. Using CPU and float32.")
 
-            self.processor = AutoProcessor.from_pretrained(self.model_id)
+            self.processor = AutoProcessor.from_pretrained(self.model_id,token=self.token)
             logger.info(f"Loading model: {self.model_id}")
             self.model = Llama4ForConditionalGeneration.from_pretrained(
                 self.model_id,
+                token=self.token,
                 attn_implementation="flex_attention", # Consider making this conditional if not always supported
                 device_map=device_map,
                 torch_dtype=torch_dtype,
