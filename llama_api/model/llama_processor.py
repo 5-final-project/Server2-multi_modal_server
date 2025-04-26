@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 class LlamaModelProcessor:
     """Handles loading and interacting with the Llama4 model."""
 
-    def __init__(self, model_id: str = "meta-llama/Llama-4-Maverick-17B-128E-Instruct"):
+    def __init__(self, model_id: str = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"):
         self.model_id = model_id
         self.processor = None
         self.model = None
