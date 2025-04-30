@@ -8,11 +8,12 @@ class QwenProcessor:
         """
         print(f"Loading Qwen model: {model_name}")
         self.model_name = model_name
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_name, cache_dir="/app/hf_cache")
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             torch_dtype="auto",
-            device_map="auto"
+            device_map="auto",
+            cache_dir="/app/hf_cache"
         )
         print("Qwen model loaded successfully.")
 
