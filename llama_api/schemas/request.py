@@ -19,3 +19,9 @@ class Message(BaseModel):
 class LlamaRequest(BaseModel):
     """Schema for the main API request body."""
     messages: List[Message] = Field(..., description="A list of messages forming the conversation history.")
+
+class QwenRequest(BaseModel):
+    """Schema for the Qwen API request body."""
+    prompt: str = Field(..., description="The prompt for the Qwen model.")
+    max_new_tokens: int = Field(32768, description="The maximum number of new tokens to generate.")
+    enable_thinking: bool = Field(True, description="Whether to enable thinking mode for Qwen.")

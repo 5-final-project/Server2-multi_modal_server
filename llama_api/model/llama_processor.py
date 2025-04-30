@@ -1,4 +1,4 @@
-from transformers import AutoProcessor, Llama4ForConditionalGeneration
+from transformers import AutoTokenizer, Llama4ForConditionalGeneration
 import torch
 from typing import List, Dict, Any
 import logging
@@ -13,9 +13,9 @@ class LlamaModelProcessor:
 
     def __init__(self, model_id: str = "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8"):
         self.model_id = model_id
-        self.processor = None
+        self.tokenizer = None
         self.model = None
-        self.token = None
+        self.token = ""
         self._load_model()
 
     def _load_model(self):
@@ -24,31 +24,29 @@ class LlamaModelProcessor:
             logger.info(f"Loading processor for model: {self.model_id}")
             # Check if CUDA is available and set device accordingly
             if torch.cuda.is_available():
-                device_map = "auto"
-                torch_dtype = torch.bfloat16
+                # device_map = "auto"
+                # torch_dtype = torch.bfloat16
                 logger.info("CUDA available. Using 'auto' device map and bfloat16.")
             else:
-                device_map = None # Let transformers decide, likely CPU
-                torch_dtype = torch.float32 # Use float32 for CPU
+                # device_map = None # Let transformers decide, likely CPU
+                # torch_dtype = torch.float32 # Use float32 for CPU
                 logger.info("CUDA not available. Using CPU and float32.")
 
-            self.processor = AutoProcessor.from_pretrained(self.model_id,token=self.token)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, token=self.token, cache_dir="/app/hf_cache")
             logger.info(f"Loading model: {self.model_id}")
+            
+            # Load the model with FP8 quantization settings
             self.model = Llama4ForConditionalGeneration.from_pretrained(
                 self.model_id,
                 token=self.token,
-                attn_implementation="flex_attention", # Consider making this conditional if not always supported
-                device_map=device_map,
-                torch_dtype=torch_dtype,
-                # Add low_cpu_mem_usage for potentially large models if needed
-                # low_cpu_mem_usage=True if device_map == "auto" else False
+                cache_dir="/app/hf_cache",
+                # tp_plan="auto",
+                torch_dtype="auto",
             )
             logger.info("Model loaded successfully.")
         except Exception as e:
             logger.error(f"Error loading model {self.model_id}: {e}", exc_info=True)
-            # Depending on the desired behavior, you might want to raise the exception
-            # or handle it gracefully (e.g., set model/processor to None and check later)
-            raise
+            raise  # Re-raise the exception to handle it at a higher level
 
     def process_messages(self, messages: List[Dict[str, Any]], max_new_tokens: int = 256) -> str:
         """
@@ -61,7 +59,7 @@ class LlamaModelProcessor:
         Returns:
             The generated response string.
         """
-        if not self.processor or not self.model:
+        if not self.tokenizer or not self.model:
             logger.error("Model or processor not loaded. Cannot process messages.")
             # Handle this case appropriately, maybe raise an error or return a specific message
             raise RuntimeError("Model or processor failed to load.")
@@ -81,23 +79,22 @@ class LlamaModelProcessor:
                 formatted_messages.append({"role": msg['role'], "content": content_list})
 
 
-            inputs = self.processor.apply_chat_template(
+            inputs = self.tokenizer.apply_chat_template(
                 formatted_messages, # Use the formatted list
                 add_generation_prompt=True,
-                tokenize=True,
                 return_dict=True,
                 return_tensors="pt",
-            ).to(self.model.device)
+            )
 
             logger.info(f"Generating response with max_new_tokens={max_new_tokens}.")
             outputs = self.model.generate(
-                **inputs,
+                **inputs.to(self.model.device),
                 max_new_tokens=max_new_tokens,
             )
 
             logger.info("Decoding generated response.")
             # Decode only the newly generated tokens
-            response = self.processor.batch_decode(outputs[:, inputs["input_ids"].shape[-1]:], skip_special_tokens=True)[0]
+            response = self.tokenizer.batch_decode(outputs[:, inputs["input_ids"].shape[-1]:], skip_special_tokens=True)[0]
             logger.info("Response generated successfully.")
             return response.strip() # Strip leading/trailing whitespace
 

@@ -40,6 +40,7 @@ RUN add-apt-repository ppa:deadsnakes/ppa && \
     update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 && \
     # Ensure pip is up to date
     python3 -m pip install --upgrade pip && \
+    apt-get install -y libgl1-mesa-glx \
     # Clean up
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
@@ -58,3 +59,8 @@ EXPOSE 8776
 
 # Define the command to run the application
 CMD ["uvicorn", "llama_api.main:app", "--host", "0.0.0.0", "--port", "8776"]
+
+# docker run -it -d --gpus all \
+#   -v /mnt/d/team5/multi_modal_server:/app \
+#   -v /mnt/d/team5/multi_modal_server/hf_cache:/app/hf_cache \
+#   llama4

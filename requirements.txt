@@ -7,3 +7,10 @@ bitsandbytes
 python-multipart
 pillow
 torchvision
+compressed-tensors
+av
+opencv-python
+decord
+einops
+timm
+qwen
