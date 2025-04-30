@@ -29,8 +29,8 @@ class HyperCLOVAXModelProcessor:
             else:
                 logger.info("CUDA not available. Using CPU.")
 
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, cache_dir="/app/hf_cache")
             self.preprocessor = AutoProcessor.from_pretrained(self.model_id, trust_remote_code=True, cache_dir="/app/hf_cache")
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, cache_dir="/app/hf_cache")
             
             logger.info(f"Loading model: {self.model_id}")
             self.model = AutoModelForCausalLM.from_pretrained(
