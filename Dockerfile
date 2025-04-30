@@ -43,6 +43,8 @@ RUN add-apt-repository ppa:deadsnakes/ppa && \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN pip install --upgrade -y transformers tokenizers
+
 # Step 4: Copy application code
 COPY ./llama_api ./llama_api
 
