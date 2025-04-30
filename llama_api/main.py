@@ -84,7 +84,7 @@ async def generate_text_qwen(
     request_body: QwenRequest = Body(...)
 ):
     """
-    Accepts a prompt and returns a generated text response from the Qwen model.
+    Accepts a list of messages and returns a generated text response from the Qwen model.
     """
     processor = context.get("qwen_processor")
     if not processor:
@@ -92,10 +92,13 @@ async def generate_text_qwen(
         raise HTTPException(status_code=500, detail="Model processor is not available. Check server logs.")
 
     try:
-        logger.info(f"Received Qwen generation request with prompt: {request_body.prompt[:100]}...") # Log first 100 chars
+        # Convert Pydantic models to dictionaries expected by the processor
+        messages_dict_list = [message.model_dump() for message in request_body.messages]
+
+        logger.info(f"Received Qwen generation request with {len(messages_dict_list)} messages.")
         # Call the Qwen processor
         response_data = processor.generate(
-            prompt=request_body.prompt,
+            messages=messages_dict_list,
             max_new_tokens=request_body.max_new_tokens,
             enable_thinking=request_body.enable_thinking
         )

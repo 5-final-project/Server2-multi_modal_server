@@ -2,7 +2,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 import torch
 
 class QwenProcessor:
-    def __init__(self, model_name="Qwen/Qwen3-8B-FP8"):
+    def __init__(self, model_name="Qwen/Qwen3-8B"):
         """
         Initializes the QwenProcessor with the specified model.
         """
@@ -17,13 +17,10 @@ class QwenProcessor:
         )
         print("Qwen model loaded successfully.")
 
-    def generate(self, prompt: str, max_new_tokens: int = 32768, enable_thinking: bool = True):
+    def generate(self, messages: list[dict], max_new_tokens: int = 32768, enable_thinking: bool = True):
         """
-        Generates text using the Qwen model.
+        Generates text using the Qwen model based on a list of messages.
         """
-        messages = [
-            {"role": "user", "content": prompt}
-        ]
         text = self.tokenizer.apply_chat_template(
             messages,
             tokenize=False,

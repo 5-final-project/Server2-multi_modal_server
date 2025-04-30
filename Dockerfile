@@ -48,7 +48,7 @@ COPY ./llama_api ./llama_api
 
 # Step 5: Expose port and run the app
 EXPOSE 8776
-CMD ["uvicorn", "llama_api.main:app", "--host", "0.0.0.0", "--port", "8776"]
+CMD ["uvicorn", "llama_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 
 # docker run -it -d --gpus all \
