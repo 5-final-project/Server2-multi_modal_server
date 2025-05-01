@@ -56,4 +56,4 @@ CMD ["uvicorn", "llama_api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 # docker run -it -d --gpus all \
 #   -v /mnt/d/team5/multi_modal_server:/app \
 #   -v /mnt/d/team5/multi_modal_server/hf_cache:/app/hf_cache \
-#   llama4
+#   vector

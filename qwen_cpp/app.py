@@ -28,6 +28,8 @@ def generate(req: GenerateRequest):
     # 대화 히스토리에서 prompt 문자열 생성
     prompt_lines: List[str] = []
     for msg in req.messages:
+        if msg.system is not None:
+            prompt_lines.append(f"System: {msg.system}")
         if msg.user is not None:
             prompt_lines.append(f"User: {msg.user}")
         if msg.assistant is not None:
