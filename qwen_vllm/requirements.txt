@@ -1,0 +1,9 @@
+# requirements.txt
+fastapi
+uvicorn
+vllm
+tiktoken
+numpy
+pydantic
+asyncio
+python-multipart
