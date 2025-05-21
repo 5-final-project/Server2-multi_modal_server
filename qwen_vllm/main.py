@@ -1,184 +1,290 @@
-# main.py
 from collections.abc import AsyncGenerator
-import os
 import asyncio
-from typing import List, Dict, Any, Optional
+from typing import List, Optional
 from pydantic import BaseModel, Field
-import numpy as np
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 import uvicorn
 from vllm import AsyncLLMEngine, AsyncEngineArgs, SamplingParams
-#import tiktoken
-from transformers import AutoTokenizer # For Qwen chat template
+from transformers import AutoTokenizer
 import uuid
+import logging
+from contextlib import asynccontextmanager
+import json
 
-# FastAPI 앱 초기화
-app = FastAPI(
-    title="vLLM Document Processing API",  # API 제목
-    description="API for document summarization and LLM requests using vLLM",  # API 설명
-    version="1.0.0"  # API 버전
-)
-
-# CORS 미들웨어 추가
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 모든 오리진 허용
-    allow_credentials=True,  # 자격 증명 허용
-    allow_methods=["*"],  # 모든 HTTP 메소드 허용
-    allow_headers=["*"],  # 모든 HTTP 헤더 허용
-)
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # 모델 설정
-MODEL_ID = "colli98/qwen3-1.7B-ko-summary-finetuned"  # 선호하는 모델로 변경 가능
-MAX_TOKENS = 2048  # 최대 토큰 수
-TEMPERATURE = 0.7  # 샘플링 온도
-TOP_P = 0.9  # Top-p 샘플링
+MODEL_ID = "colli98/qwen3-1.7B-ko-summary-finetuned"
 
-# 텍스트 청킹을 위한 토크나이저 초기화
-#encoding = tiktoken.get_encoding("cl100k_base")  # OpenAI의 토크나이저 사용, 선호하는 다른 토크나이저 사용 가능
-
-# Qwen tokenizer for chat template
-tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
-
+# Pydantic 모델 정의
 class ChatMessage(BaseModel):
-    role: str = Field(..., description="메시지 역할 (system, user, assistant)")
-    content: str = Field(..., description="메시지 내용")
+    role: str
+    content: str
 
 class LLMRequest(BaseModel):
-    prompt: List[ChatMessage]  # LLM에 전달할 메시지 목록 (OpenChatML 형식)
-    max_tokens: int = Field(default=1024, description="생성할 최대 토큰 수")
-    temperature: float = Field(default=0.7, description="샘플링 온도")
-    top_p: float = Field(default=0.9, description="Top-p 핵 샘플링")
+    prompt: List[ChatMessage]
+    max_tokens: int = Field(default=2048, ge=1, le=4096)
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    top_p: float = Field(default=0.9, ge=0.0, le=1.0)
 
 class LLMResponse(BaseModel):
-    response: str  # LLM 응답
-    processing_time: float  # 처리 시간
+    response: str
+    processing_time: float
 
-# 엔진 상태 관리
-engine = None  # LLM 엔진 인스턴스
-engine_semaphore = asyncio.Semaphore(1)  # 엔진 초기화를 위한 세마포어
+# 전역 변수
+engine: Optional[AsyncLLMEngine] = None
+tokenizer = None
+engine_lock = asyncio.Lock()
+MAX_CONCURRENT_REQUESTS = 10
+request_semaphore = asyncio.Semaphore(MAX_CONCURRENT_REQUESTS)
+
+async def initialize_engine():
+    """엔진 초기화 함수"""
+    global engine, tokenizer
+    
+    try:
+        logger.info(f"토크나이저 로딩 중: {MODEL_ID}")
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+        
+        logger.info(f"vLLM 엔진 초기화 중: {MODEL_ID}")
+        args = AsyncEngineArgs(
+            model=MODEL_ID,
+            tensor_parallel_size=1,
+            gpu_memory_utilization=0.8,  # 0.95에서 0.8로 낮춤
+            max_num_batched_tokens=2048,  # 1024에서 2048로 증가
+            max_model_len=4096,  # 2048에서 4096으로 증가
+            enforce_eager=True,  # 메모리 안정성을 위해 추가
+            disable_log_stats=False,
+        )
+        engine = AsyncLLMEngine.from_engine_args(args)
+        logger.info("엔진 초기화 완료")
+        
+    except Exception as e:
+        logger.error(f"엔진 초기화 실패: {e}")
+        raise
 
 async def get_engine():
-    """
-    LLM 엔진을 비동기적으로 가져오거나 초기화합니다.
-    """
+    """엔진 인스턴스 반환"""
     global engine
     if engine is None:
-        async with engine_semaphore:
-            if engine is None:  # 경쟁 상태를 피하기 위해 다시 확인
-                engine_args = AsyncEngineArgs(
-                    model=MODEL_ID,  # 사용할 모델 ID
-                    tensor_parallel_size=1,  # GPU 설정에 따라 조정
-                    gpu_memory_utilization=0.95,  # GPU 메모리 사용률
-                    max_num_batched_tokens=1024,  # 메모리에 따라 조정
-                    max_model_len=2048,
-                )
-                engine = AsyncLLMEngine.from_engine_args(engine_args)
+        async with engine_lock:
+            if engine is None:
+                await initialize_engine()
     return engine
 
-
-# LLM 추론 실행 함수
-async def run_inference(messages: List[ChatMessage], max_tokens: int = 512, temperature: float = 0.7, top_p: float = 0.9) ->  AsyncGenerator[str, None]:
-    """
-    LLM 추론을 실행합니다.
-    :param messages: LLM에 전달할 메시지 목록 (OpenChatML 형식)
-    :param max_tokens: 생성할 최대 토큰 수
-    :param temperature: 샘플링 온도
-    :param top_p: Top-p 샘플링
-    :return: LLM 응답 텍스트
-    """
-    engine = await get_engine()  # LLM 엔진 가져오기
-
-    # Convert List[ChatMessage] to the format expected by tokenizer.apply_chat_template
-    # which is a list of dictionaries, e.g., [{"role": "system", "content": "You are a helpful assistant."}, ...]
-    chat_input = [{"role": msg.role, "content": msg.content} for msg in messages]
-
-    # Apply the chat template to get the formatted string prompt
-    # For Qwen, add_generation_prompt=True is important for the model to generate a response.
-    formatted_prompt = tokenizer.apply_chat_template(
-        chat_input,
-        tokenize=False,
-        add_generation_prompt=True
-    )
+async def run_inference(
+    messages: List[ChatMessage],
+    max_tokens: int,
+    temperature: float,
+    top_p: float
+) -> AsyncGenerator[str, None]:
+    """추론 실행 함수"""
+    engine_instance = None
+    req_id = None
     
-    sampling_params = SamplingParams(
-        max_tokens=max_tokens,
-        temperature=temperature,
-        top_p=top_p,
-    )
-    request_id = str(uuid.uuid4())
-    # Use the formatted_prompt string with the vLLM engine
-    async for result in engine.generate(formatted_prompt, request_id, sampling_params):
-        for output in result.outputs:
-            text = output.text
-            if text:
-                yield text
+    try:
+        # 동시 요청 수 제한
+        async with request_semaphore:
+            engine_instance = await get_engine()
+            
+            # 채팅 템플릿 적용
+            chat_input = [{"role": m.role, "content": m.content} for m in messages]
+            prompt = tokenizer.apply_chat_template(
+                chat_input,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            
+            # 샘플링 파라미터 설정
+            params = SamplingParams(
+                max_tokens=max_tokens,
+                temperature=temperature,
+                top_p=top_p,
+                skip_special_tokens=True,
+                stop_token_ids=None,
+            )
+            
+            req_id = str(uuid.uuid4())
+            logger.info(f"추론 시작 - 요청 ID: {req_id}")
+            
+            # 스트리밍 생성
+            accumulated_text = ""
+            async for request_output in engine_instance.generate(prompt, params, req_id):
+                if request_output.outputs:
+                    for output in request_output.outputs:
+                        # 새로 생성된 텍스트만 추출
+                        current_text = output.text
+                        if len(current_text) > len(accumulated_text):
+                            new_text = current_text[len(accumulated_text):]
+                            accumulated_text = current_text
+                            if new_text.strip():  # 빈 문자열이 아닌 경우만 yield
+                                yield new_text
+                                
+                        # 완료 상태 확인
+                        if output.finish_reason is not None:
+                            logger.info(f"생성 완료 - 요청 ID: {req_id}, 이유: {output.finish_reason}")
+                            break
+                            
+    except asyncio.CancelledError:
+        logger.warning(f"요청 취소됨 - 요청 ID: {req_id}")
+        # 엔진에서 요청 중단 시도
+        if engine_instance and req_id:
+            try:
+                await engine_instance.abort(req_id)
+            except Exception as abort_error:
+                logger.error(f"요청 중단 실패: {abort_error}")
+        raise
+        
+    except Exception as e:
+        logger.error(f"추론 중 오류 발생 - 요청 ID: {req_id}, 오류: {e}")
+        # 엔진에서 요청 중단 시도
+        if engine_instance and req_id:
+            try:
+                await engine_instance.abort(req_id)
+            except Exception as abort_error:
+                logger.error(f"요청 중단 실패: {abort_error}")
+        raise HTTPException(status_code=500, detail=f"추론 실행 중 오류: {str(e)}")
 
-# 직접 LLM 요청을 위한 API 엔드포인트
+# 생명주기 관리
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 시작 시
+    logger.info("애플리케이션 시작")
+    await initialize_engine()
+    yield
+    # 종료 시
+    logger.info("애플리케이션 종료")
+
+# FastAPI 애플리케이션 초기화
+app = FastAPI(
+    title="vLLM Document Processing API",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# 스트리밍 응답 엔드포인트
+@app.post("/api/generate-stream")
+async def generate_stream(request: LLMRequest):
+    """스트리밍 생성 엔드포인트"""
+    try:
+        async def streamer():
+            try:
+                async for chunk in run_inference(
+                    request.prompt,
+                    request.max_tokens,
+                    request.temperature,
+                    request.top_p
+                ):
+                    # JSON 형태로 chunk 전송
+                    yield f"data: {json.dumps({'text': chunk, 'done': False})}\n\n"
+                
+                # 완료 신호
+                yield f"data: {json.dumps({'text': '', 'done': True})}\n\n"
+                
+            except asyncio.CancelledError:
+                logger.warning("스트리밍 클라이언트 연결 끊김")
+                yield f"data: {json.dumps({'error': 'Connection cancelled', 'done': True})}\n\n"
+            except Exception as e:
+                logger.error(f"스트리밍 중 오류: {e}")
+                yield f"data: {json.dumps({'error': str(e), 'done': True})}\n\n"
+        
+        return StreamingResponse(
+            streamer(), 
+            media_type="text/plain",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"  # nginx 버퍼링 비활성화
+            }
+        )
+        
+    except Exception as e:
+        logger.error(f"스트리밍 엔드포인트 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"스트리밍 시작 실패: {str(e)}")
+
+# 동기식 응답 엔드포인트
 @app.post("/api/generate", response_model=LLMResponse)
 async def llm_request(request: LLMRequest) -> LLMResponse:
-    """
-    직접 LLM 요청을 처리합니다.
-    :param request: LLM 요청 객체
-    :return: LLM 응답 객체
-    """
-    start_time = asyncio.get_event_loop().time()  # 시작 시간 기록
-    
-    # response = await run_inference(
-    #     request.prompt, 
-    #     max_tokens=request.max_tokens,
-    #     temperature=request.temperature,
-    #     top_p=request.top_p
-    # )  # LLM 추론 실행
-
-    async def stream_response():
-        result = ""
-        async for result in run_inference(
+    """동기식 생성 엔드포인트"""
+    try:
+        start_time = asyncio.get_event_loop().time()
+        full_response = ""
+        
+        async for chunk in run_inference(
             request.prompt,
-            max_tokens=request.max_tokens,
-        temperature=request.temperature
+            request.max_tokens,
+            request.temperature,
+            request.top_p
         ):
-            for response in result:
-                # 클라이언트로 텍스트를 점진적으로 전송
-                result += response
-        return result
-    
-    response = await stream_response()
-    end_time = asyncio.get_event_loop().time()  # 종료 시간 기록
-    processing_time = end_time - start_time  # 처리 시간 계산
-    
-    return LLMResponse(
-        response=response,
-        processing_time=processing_time
-    )
+            full_response += chunk
+        
+        processing_time = asyncio.get_event_loop().time() - start_time
+        
+        return LLMResponse(
+            response=full_response.strip(),
+            processing_time=processing_time
+        )
+        
+    except Exception as e:
+        logger.error(f"동기식 생성 오류: {e}")
+        raise HTTPException(status_code=500, detail=f"텍스트 생성 실패: {str(e)}")
 
-@app.post("/api/generate-stream", response_model=LLMResponse)
-async def generate_stream(request: LLMRequest) -> LLMResponse:
-
-    # 실제 엔진 호출
-    async def stream_response():
-        result = ""
-        async for result in run_inference(
-            request.prompt,
-            max_tokens=request.max_tokens,
-        temperature=request.temperature
-        ):
-            for response in result:
-                # 클라이언트로 텍스트를 점진적으로 전송
-                yield response
-
-    return StreamingResponse(stream_response(), media_type="text/plain")
-
-# 상태 확인 엔드포인트
+# 헬스체크 엔드포인트
 @app.get("/health")
 async def health_check():
-    """
-    API 상태를 확인합니다.
-    """
-    return {"status": "healthy", "model": MODEL_ID}  # 건강 상태 및 모델 ID 반환
+    """헬스체크 엔드포인트"""
+    try:
+        engine_status = "ready" if engine is not None else "not_ready"
+        return {
+            "status": "healthy",
+            "model": MODEL_ID,
+            "engine_status": engine_status,
+            "max_concurrent_requests": MAX_CONCURRENT_REQUESTS
+        }
+    except Exception as e:
+        logger.error(f"헬스체크 오류: {e}")
+        raise HTTPException(status_code=500, detail="서비스 상태 확인 실패")
 
-# 서버 시작
+# 엔진 상태 확인 엔드포인트
+@app.get("/status")
+async def get_status():
+    """엔진 상태 확인"""
+    try:
+        if engine is not None:
+            return {
+                "engine_ready": True,
+                "model": MODEL_ID,
+                "active_requests": MAX_CONCURRENT_REQUESTS - request_semaphore._value
+            }
+        else:
+            return {
+                "engine_ready": False,
+                "model": MODEL_ID,
+                "active_requests": 0
+            }
+    except Exception as e:
+        logger.error(f"상태 확인 오류: {e}")
+        raise HTTPException(status_code=500, detail="상태 확인 실패")
+
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)  # Uvicorn 서버 실행
+    uvicorn.run(
+        "main:app", 
+        host="0.0.0.0", 
+        port=8000, 
+        reload=False,  # 프로덕션에서는 reload=False
+        workers=1,     # vLLM은 단일 워커 권장
+        loop="asyncio",
+        log_level="info"
+    )
